@@ -91,6 +91,7 @@ def joyCallback(data):
 	btn_automatic_mode = data.buttons[2]  # X button
 	btn_corrected_mode = data.buttons[0]  # A button
 
+
 	# Disarming when Back button is pressed
 	if (btn_disarm == 1 and arming == True):
 		arming = False
@@ -105,7 +106,7 @@ def joyCallback(data):
 	if (btn_manual_mode and not set_mode[0]):
 		set_mode[0] = True
 		set_mode[1] = False
-		set_mode[2] = False		
+		set_mode[2] = False	
 		rospy.loginfo("Manual Mode")
 
 	if (btn_automatic_mode and not set_mode[1]):
@@ -134,6 +135,7 @@ def joyCallback(data):
 def armDisarm(armed):
 	# This functions sends a long command service with 400 code to arm or disarm motors
 	if (armed):
+		# print('im armed')
 		rospy.wait_for_service('/USV/mavros/cmd/command')
 		try:
 			armService = rospy.ServiceProxy('/USV/mavros/cmd/command', CommandLong)
@@ -142,6 +144,7 @@ def armDisarm(armed):
 		except rospy.ServiceException as e:
 			rospy.loginfo("Except arming")
 	else:
+		# print('im disarmed')
 		rospy.wait_for_service('/USV/mavros/cmd/command')
 		try:
 			armService = rospy.ServiceProxy('/USV/mavros/cmd/command', CommandLong)
@@ -180,13 +183,12 @@ class PID:
 
 		# Compute proportional error
 		error = self.setpoint - feedback_value
-		# print(error)
 
 		# Compute error derivative
 		der_error = error - self.proportional_error
 		# print(der_error)
 		# print(elapsed_time)
-		derivative = (der_error / elapsed_time) if elapsed_time > 0 else 0
+		derivative = (error / elapsed_time) if elapsed_time > 0 else 0
 		# print(derivative)
 
 		# Compute integral act
@@ -195,11 +197,11 @@ class PID:
 	
 		# Compute tau_cmd
 		proportional_tau = self.Kp * error
-		# print(proportional_tau)
+		# print('proportional_tau = ', proportional_tau)
 		integral_tau = self.Ki * self.integral_act
-		# print(integral_tau)
+		# print('integral_tau = ', integral_tau)
 		derivative_tau = self.Kd * derivative
-		# print(derivative_tau)
+		# print('derivative_tau = ', derivative_tau)
 
 		tau_cmd = proportional_tau + integral_tau + derivative_tau
 				
@@ -207,7 +209,7 @@ class PID:
 		self.init_time = current_time
 		self.proportional_error = error
 
-		return tau_cmd
+		return tau_cmd, error
 
 
 def velCallback(cmd_vel):
@@ -216,7 +218,7 @@ def velCallback(cmd_vel):
 	# Only continue if Manual Mode is enabled
 	if (set_mode[1] or set_mode[2]):
 		# Set motors to idle when
-		# setOverrideRCIN(1500, 1500, 1500, 1500, 1500, 1500)
+		setOverrideRCIN(1500, 1500, 1500, 1500, 1500, 1500)
 		return
 
 	# Extract cmd_vel message
@@ -227,7 +229,13 @@ def velCallback(cmd_vel):
 	lateral_left_right 	= mapValueScalSat(-cmd_vel.linear.y)
 	pitch_left_right 	= mapValueScalSat(cmd_vel.angular.y)
 
-	setOverrideRCIN(pitch_left_right, roll_left_right, ascend_descend, yaw_left_right, forward_reverse, lateral_left_right)
+	# If no joystick input, set motors to neutral
+	if all(v == 1500 for v in [roll_left_right, yaw_left_right, ascend_descend, forward_reverse, lateral_left_right, pitch_left_right]):
+		setOverrideRCIN(1500, 1500, 1500, 1500, 1500, 1500)
+	else:
+		# Log the cmd_vel message and mapped values
+		setOverrideRCIN(pitch_left_right, roll_left_right, ascend_descend, yaw_left_right, forward_reverse, lateral_left_right)
+
 
 def depthCallback(data):
 	global depth
@@ -239,27 +247,14 @@ def depthCallback(data):
 	# Get the depth
 	depth = data.data
 
-def pressureDepthCallback(data):
-	global depth
-	global init_p0
-	global depth_p0
+# def pressureDepthCallback(data):
+# 	global depth
+# 	global init_p0
+# 	global depth_p0
 
-	# Only continue if Automatic Mode and Correction Mode are enabled
-	if set_mode[0]:
-		return
+# 	# Only continue if Automatic Mode and Correction Mode are enabled# print('im armed')
 
-	# Parameter
-	rho = 1000.0 # 1025.0 for sea water
-	g = 9.80665
-
-	# Get pressure
-	pressure = data.fluid_pressure
-	if (init_p0):
-		# 1st execution, init
-		depth_p0 = (pressure - 101300)/(rho*g)
-		init_p0 = False
-
-	depth = (pressure - 101300)/(rho*g) - depth_p0
+# 	depth = (pressure - 101300)/(rho*g) - depth_p0
 
 def imuCallback(data):
 	global angle_roll_a0
@@ -297,12 +292,13 @@ def imuCallback(data):
 	angle_wrt_startup[2] = ((angle_yaw - angle_yaw_a0 + 3.0*math.pi)%(2.0*math.pi) - math.pi) * 180/math.pi
 	
 	angle = Twist()
-	angle.angular.x = angle_wrt_startup[0]
-	angle.angular.y = angle_wrt_startup[1]
-	angle.angular.z = angle_wrt_startup[2]
+	angle.angular.x = angle_wrt_startup[0] * math.pi/180
+	angle.angular.y = angle_wrt_startup[1] * math.pi/180
+	angle.angular.z = angle_wrt_startup[2] * math.pi/180
 
 	# Publish the orientation
-	pub_angle_degre.publish(angle)
+	# pub_angle_degre.publish(angle)
+	pub_angle_rad.publish(angle)
 
 	## Extraction of angular velocity
 	p = angular_velocity.x
@@ -331,15 +327,40 @@ def stabilize():
 
 	# print(depth)
 
+
+
 	# PID controllers for each degree of freedom
-	depth_PID = PID(setpoint=ref_z, Kp=1.0, Ki=0.1, Kd=0.4)
-	roll_PID = PID(setpoint=ref_roll, Kp=0.4, Ki=0.09, Kd=0.4)
-	pitch_PID = PID(setpoint=ref_pitch, Kp=0.4, Ki=0.09, Kd=0.4)
+	
+	## Stabile 1 (not so good, stock)
+	# depth_PID = PID(setpoint=ref_z, Kp=250, Ki=150, Kd=0.001)
+	# roll_PID = PID(setpoint=ref_roll, Kp=50, Ki=20, Kd=0.00005)
+	# pitch_PID = PID(setpoint=ref_pitch, Kp=50, Ki=20, Kd=0.00005)
+
+	## best then stabile 2
+	# depth_PID = PID(setpoint=ref_z, Kp=280, Ki=180, Kd=0.0012)
+	# roll_PID = PID(setpoint=ref_roll, Kp=50, Ki=20, Kd=0.00005)
+	# pitch_PID = PID(setpoint=ref_pitch, Kp=50, Ki=20, Kd=0.00005)
+
+	## Best but converge to -0.6
+	# depth_PID = PID(setpoint=ref_z, Kp=280, Ki=200, Kd=0.0012)
+	# roll_PID = PID(setpoint=ref_roll, Kp=50, Ki=20, Kd=0.0001)
+	# pitch_PID = PID(setpoint=ref_pitch, Kp=50, Ki=30, Kd=0.0001)
+
+	## Converge to -0.6, way better oscillation damping in pitch and heave
+	depth_PID = PID(setpoint=ref_z, Kp=280, Ki=200, Kd=0.0012)
+	roll_PID = PID(setpoint=ref_roll, Kp=50, Ki=20, Kd=0.0001)
+	pitch_PID = PID(setpoint=ref_pitch, Kp=100, Ki=80, Kd=0.0011)
+
+	# depth_PID = PID(setpoint=ref_z, Kp=280, Ki=300, Kd=0.0012)
+	# roll_PID = PID(setpoint=ref_roll, Kp=100, Ki=50, Kd=0.0001)
+	# pitch_PID = PID(setpoint=ref_pitch, Kp=100, Ki=100, Kd=0.0011)
+
+
 
 	# Compute control body force
-	tau_depth = depth_PID.compute(depth)
-	tau_roll = roll_PID.compute(np.deg2rad(roll))
-	tau_pitch = pitch_PID.compute(np.deg2rad(pitch))
+	[tau_depth, e_depth] = depth_PID.compute(depth)
+	[tau_roll, e_roll] = roll_PID.compute(np.deg2rad(roll))
+	[tau_pitch, e_pitch] = pitch_PID.compute(np.deg2rad(pitch))
 	tau_stb = np.array([0, 0, tau_depth, tau_roll, tau_pitch, 0])
 
 	# print('tau_depth', tau_depth)
@@ -359,11 +380,17 @@ def stabilize():
 	tau_roll_signal = int(init_signal + tau_roll)
 	tau_pitch_signal = int(init_signal + tau_pitch)
 
-	print('tau_depth_signal = ', tau_depth_signal)
+	# print('depth = ', depth)
+	# print('roll = ', roll)
+	# print('pitch = ', pitch)
+	# # print('init_signal = ', init_signal)
+	print('e_depth = ', e_depth)
+	print('tau_depth = ', tau_depth)
+	# print('tau_depth_signal = ', tau_depth_signal)
 	# print('tau_roll_signal = ', tau_roll_signal)
 	# print('tau_pitch_signal = ', tau_pitch_signal)
 	
-	# setOverrideRCIN(1500, 1500, tau_depth_signal, tau_roll_signal, tau_pitch_signal, 1500)
+	setOverrideRCIN(1500, 1500, tau_depth_signal, tau_roll_signal, tau_pitch_signal, 1500)
 
 # -------- Utilities ------------
 
@@ -371,7 +398,7 @@ def mapValueScalSat(value):
 	# Correction_Vel and joy between -1 et 1
 	# scaling for publishing with setOverrideRCIN values between 1100 and 1900
 	# neutral point is 1500
-	pulse_width = value * 400 + 1500 
+	pulse_width = value * 1000 + 1500 
 
 	# Saturation
 	if pulse_width > Vmax_mot:
@@ -404,6 +431,11 @@ def setOverrideRCIN(channel_pitch, channel_roll, channel_throttle, channel_yaw, 
 	# msg_override.channels[6] = 1500							# pulseCmd[6]--> light
 	# msg_override.channels[7] = 1500							# pulseCmd[5]--> camera servo
 
+	# Log override
+	# rospy.loginfo(f"{msg_override.channels[0]} {msg_override.channels[1]} {msg_override.channels[2]} {msg_override.channels[3]} {msg_override.channels[4]} {msg_override.channels[5]}")
+
+    # Publish the override message
+
 	pub_msg_override.publish(msg_override)
 
 # ----------- ROS ---------------
@@ -414,7 +446,10 @@ def subscriber():
 	rospy.Subscriber("cmd_vel", Twist, velCallback)
 	rospy.Subscriber("mavros/imu/data", Imu, imuCallback)
 	# rospy.Subscriber("mavros/imu/static_pressure", FluidPressure, depthPressureCallback)
-	rospy.Subscriber("mavros/global_position/rel1alt", Float64, depthCallback)
+	rospy.Subscriber("mavros/global_position/rel_alt", Float64, depthCallback)
+
+	# /USV/mavros/global_position/rel_alt
+
 
 if __name__ == '__main__':
 	# Initial condition set as Disarmed
@@ -428,7 +463,8 @@ if __name__ == '__main__':
 
 	# Publish depth and orientation
 	pub_depth = rospy.Publisher('/USV/depth/state', Float64, queue_size = 10, tcp_nodelay = True)
-	pub_angle_degre = rospy.Publisher('/USV/angle_degree', Twist, queue_size = 10, tcp_nodelay = True)
+	# pub_angle_degre = rospy.Publisher('/USV/angle_degree', Twist, queue_size = 10, tcp_nodelay = True)
+	pub_angle_rad = rospy.Publisher('/USV/angle_radian', Twist, queue_size = 10, tcp_nodelay = True)
 
 	# Publish linear and angular velocity
 	pub_angular_velocity = rospy.Publisher('/USV/angular_velocity', Twist, queue_size = 10, tcp_nodelay = True)

@@ -16,6 +16,8 @@ from std_msgs.msg import String
 from mavros_msgs.msg import OverrideRCIn
 from sensor_msgs.msg import Joy
 from sensor_msgs.msg import Imu
+#from waterlinked_a50_ros_driver.msg import DVL
+#from waterlinked_a50_ros_driver.msg import DVLBeam
 from sensor_msgs.msg import FluidPressure
 from sensor_msgs.msg import LaserScan
 from mavros_msgs.srv import CommandLong
@@ -76,7 +78,7 @@ def joyCallback(data):
 	btn_disarm = data.buttons[6]  # Back button
 	btn_manual_mode = data.buttons[3]  # Y button
 	btn_automatic_mode = data.buttons[2]  # X button
-	btn_corrected_mode = data.buttons[0]  # A buttonopen
+	btn_corrected_mode = data.buttons[0]  # A button
 
 	# Disarming when Back button is pressed
 	if (btn_disarm == 1 and arming == True):
@@ -111,17 +113,17 @@ def joyCallback(data):
 def armDisarm(armed):
 	# This functions sends a long command service with 400 code to arm or disarm motors
 	if (armed):
-		rospy.wait_for_service('/USV/mavros/cmd/command')
+		rospy.wait_for_service('mavros/cmd/command')
 		try:
-			armService = rospy.ServiceProxy('/USV/mavros/cmd/command', CommandLong)
+			armService = rospy.ServiceProxy('mavros/cmd/command', CommandLong)
 			armService(0, 400, 0, 1, 0, 0, 0, 0, 0, 0)
 			rospy.loginfo("Arming Succeeded")
 		except rospy.ServiceException as e:
 			rospy.loginfo("Except arming")
 	else:
-		rospy.wait_for_service('/USV/mavros/cmd/command')
+		rospy.wait_for_service('mavros/cmd/command')
 		try:
-			armService = rospy.ServiceProxy('/USV/mavros/cmd/command', CommandLong)
+			armService = rospy.ServiceProxy('mavros/cmd/command', CommandLong)
 			armService(0, 400, 0, 0, 0, 0, 0, 0, 0, 0)
 			rospy.loginfo("Disarming Succeeded")
 		except rospy.ServiceException as e:
@@ -131,13 +133,10 @@ def armDisarm(armed):
 def velCallback(cmd_vel):
 	global set_mode
 
-	# print(cmd_vel)
-
 	# Only continue if manual_mode is enabled
 	if (set_mode[1] or set_mode[2]):
 		return
 
-	
 	# Extract cmd_vel message
 	roll_left_right 	= mapValueScalSat(cmd_vel.angular.x)
 	yaw_left_right 		= mapValueScalSat(-cmd_vel.angular.z)
@@ -208,21 +207,18 @@ def OdoCallback(data):
 	if (set_mode[0]):
 		return
 
-	print('yaw')
-
 	# Send PWM commands to motors
 	ref_yaw = 90
 		
 	pid = PID(setpoint=ref_yaw, Kp=1)
 	feedback_value = angle_wrt_startup[2]
 	Correction_yaw_pid = pid.compute(feedback_value)
-	# print(Correction_yaw_pid)
+	print(Correction_yaw_pid)
 
 
 	# yaw command to be adapted using sensor feedback	
 	Correction_yaw = 1500 + Correction_yaw_pid #add the PID values
-	# print(Correction_yaw)
-	setOverrideRCIN(1500, 1500, 1600, 1500, 1500, 1500)
+	setOverrideRCIN(1500, 1500, 1500, Correction_yaw, 1500, 1500)
 
 
 def DvlCallback(data):
@@ -248,8 +244,6 @@ def PressureCallback(data):
 	rho = 1000.0 # 1025.0 for sea water
 	g = 9.80665
 
-	print('heave')
-
 	# Only continue if manual_mode is disabled
 	if (set_mode[0]):
 		return
@@ -274,20 +268,20 @@ def PressureCallback(data):
 	pid = PID(setpoint=ref_depth, Kp=0)
 	feedback_value = depth_wrt_startup
 	Correction_depth_pid = pid.compute(feedback_value)
-	# print(Correction_depth_pid)
+	print(Correction_depth_pid)
 
 
 	# update Correction_depth
 	Correction_depth = 1500	
 	# Send PWM commands to motors
 	Correction_depth = int(Correction_depth + Correction_depth_pid)
-	# setOverrideRCIN(1500, 1500, Correction_depth, 1500, 1500, 1500)
+	setOverrideRCIN(1500, 1500, Correction_depth, 1500, 1500, 1500)
 
 def mapValueScalSat(value):
 	# Correction_Vel and joy between -1 et 1
 	# scaling for publishing with setOverrideRCIN values between 1100 and 1900
 	# neutral point is 1500
-	pulse_width = value * 1 + 1500
+	pulse_width = value * 400 + 1500
 
 	# Saturation
 	if pulse_width > 1900:
@@ -303,8 +297,7 @@ def setOverrideRCIN(channel_pitch, channel_roll, channel_throttle, channel_yaw, 
 	# It overrides Rc channels inputs and simulates motor controls.
 	# In this case, each channel manages a group of motors not individually as servo set
 
-	msg_override = OverrideRCIn()        
-	# msg_override.channels = [1700, 1600, 1600, 1600, 1600, 1600, 1600, 1600, 1600, 1600, 1600, 1600, 1600, 1600, 1600, 1600, 1600, 1600]
+	msg_override = OverrideRCIn()
 	msg_override.channels[0] = np.uint(channel_pitch)       # pulseCmd[4]--> pitch	
 	msg_override.channels[1] = np.uint(channel_roll)        # pulseCmd[3]--> roll
 	msg_override.channels[2] = np.uint(channel_throttle)    # pulseCmd[2]--> heave 
@@ -313,7 +306,6 @@ def setOverrideRCIN(channel_pitch, channel_roll, channel_throttle, channel_yaw, 
 	msg_override.channels[5] = np.uint(channel_lateral)     # pulseCmd[1]--> sway
 	msg_override.channels[6] = 1500
 	msg_override.channels[7] = 1500
-	print(msg_override)
 
 	pub_msg_override.publish(msg_override)
 
@@ -322,9 +314,9 @@ def subscriber():
 	rospy.Subscriber("joy", Joy, joyCallback)
 	rospy.Subscriber("cmd_vel", Twist, velCallback)
 	rospy.Subscriber("mavros/imu/data", Imu, OdoCallback)
-	rospy.Subscriber("mavros/global_position/rel_alt", Float64, PressureCallback)
+	rospy.Subscriber("mavros/imu/water_pressure", FluidPressure, PressureCallback)
 	#rospy.Subscriber("/dvl/data", DVL, DvlCallback)
-	#rospy.Subscriber("distance_sonar", Float64MultiArray, pingerCallback)
+	rospy.Subscriber("distance_sonar", Float64MultiArray, pingerCallback)
 	rospy.spin()
 
 
@@ -364,11 +356,11 @@ if __name__ == '__main__':
 	armDisarm(False)  # Not automatically disarmed at startup
 	rospy.init_node('autonomous_MIR', anonymous=False)
 	pub_msg_override = rospy.Publisher("mavros/rc/override", OverrideRCIn, queue_size = 10, tcp_nodelay = True)
-	pub_angle_degree = rospy.Publisher('/angle_degree', Twist, queue_size = 10, tcp_nodelay = True)
-	pub_depth = rospy.Publisher('/depth/state', Float64, queue_size = 10, tcp_nodelay = True)
+	pub_angle_degre = rospy.Publisher('angle_degree', Twist, queue_size = 10, tcp_nodelay = True)
+	pub_depth = rospy.Publisher('depth/state', Float64, queue_size = 10, tcp_nodelay = True)
 
-	pub_angular_velocity = rospy.Publisher('/angular_velocity', Twist, queue_size = 10, tcp_nodelay = True)
-	pub_linear_velocity = rospy.Publisher('/linear_velocity', Twist, queue_size = 10, tcp_nodelay = True)
+	pub_angular_velocity = rospy.Publisher('angular_velocity', Twist, queue_size = 10, tcp_nodelay = True)
+	pub_linear_velocity = rospy.Publisher('linear_velocity', Twist, queue_size = 10, tcp_nodelay = True)
 
 	subscriber()
 
